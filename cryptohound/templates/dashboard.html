@@ -1,0 +1,15 @@
+{% extends 'base.html' %}{% block content %}
+<h1>Mission Dashboard</h1>
+<div class="cards mission-cards">
+  <div class="card metric-card"><div class="metric-icon"><svg viewBox="0 0 24 24"><path d="M12 3v11m0-11 4 4m-4-4-4 4M5 14v6h14v-6"/></svg></div><div><span>Imports</span><b>{{metrics.imports}}</b></div></div>
+  <div class="card metric-card"><div class="metric-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></div><div><span>Ledger Events</span><b>{{metrics.transactions}}</b></div></div>
+  <div class="card metric-card"><div class="metric-icon"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h7"/></svg></div><div><span>Tax Records</span><b>{{metrics.tax_records}}</b></div></div>
+  <div class="card metric-card"><div class="metric-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16 9"/></svg></div><div><span>Review Queue</span><b>{{metrics.review}}</b></div></div>
+  <div class="card metric-card"><div class="metric-icon"><svg viewBox="0 0 24 24"><ellipse cx="9" cy="7" rx="6" ry="2.5"/><path d="M3 7v5c0 1.4 2.7 2.5 6 2.5M3 12v5c0 1.4 2.7 2.5 6 2.5M14 10h7v9h-7z"/></svg></div><div><span>Reported Proceeds</span><b class="good">${{ '%.2f'|format(metrics.proceeds) }}</b></div></div>
+  <div class="card metric-card"><div class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 20h16M7 8h10M12 4v16M4 8l3-4 3 4M14 8l3-4 3 4"/></svg></div><div><span>Reported Basis</span><b>${{ '%.2f'|format(metrics.basis) }}</b></div></div>
+  <div class="card metric-card"><div class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 20h3V12H4zm6 0h3V7h-3zm6 0h3V4h-3z"/></svg></div><div><span>Realized P&amp;L</span><b class="{{'good' if metrics.realized>=0 else 'bad'}}">${{ '%.2f'|format(metrics.realized) }}</b></div></div>
+</div>
+<div class="grid"><section><h2>Active / Net Positions</h2><p class="muted">v1 net-flow view; imports are evidence, not live market pricing.</p><table><tr><th>Asset</th><th>Quantity</th><th>Observed locations</th></tr>{% for p in positions %}<tr><td>{{p.asset}}</td><td>{{'%.10f'|format(p.quantity)}}</td><td>{{p.locations}}</td></tr>{% else %}<tr><td colspan=3>No positions yet.</td></tr>{% endfor %}</table></section>
+<section><h2>Evidence Health</h2>{% for i in issues %}<div class="issue">{{i}}</div>{% endfor %}<h3>Recent imports</h3>{% for r in recent %}<div class="mini"><b>{{r.filename}}</b><br><span>{{r.provider}} · {{r.imported_at}}</span></div>{% endfor %}</section></div>
+<section><h2>Liquidated / Tax Evidence</h2><table><tr><th>Asset</th><th>Proceeds</th><th>Basis</th><th>Gain/Loss</th></tr>{% for r in liquidated %}<tr><td>{{r.asset}}</td><td>${{'%.2f'|format(r.proceeds or 0)}}</td><td>${{'%.2f'|format(r.basis or 0)}}</td><td>${{'%.2f'|format(r.gl or 0)}}</td></tr>{% else %}<tr><td colspan=4>No tax evidence imported.</td></tr>{% endfor %}</table></section>
+{% endblock %}

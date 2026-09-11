@@ -1,0 +1,54 @@
+# CryptoHound runtime / evidence -- NEVER commit
+/data/
+/backups/
+/uploads/
+/imports/
+/evidence/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*~
+*.swp
+
+# Logs / temp / generated exports
+*.log
+*.tmp
+*.bak
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.txf
+
+# Local test artifacts
+/test-output/
+/tmp/

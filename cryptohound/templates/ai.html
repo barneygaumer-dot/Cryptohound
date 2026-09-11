@@ -1,0 +1,92 @@
+{% extends 'base.html' %}{% block content %}
+<div class="ai-title-row">
+  <div><h1>AI Advisor</h1><p class="muted">Full-service crypto intelligence across evidence, accounting, tax, holdings, portfolio analysis, investing, and research.</p></div>
+  <div class="ai-readonly"><b>🔒 READ-ONLY ANALYST</b><span>AI cannot modify ledger, lots, basis, tax records, or source evidence.</span></div>
+</div>
+
+<div class="ai-status-grid">
+  <div class="card ai-status"><span>API</span><b class="{{'good' if api_ready else 'bad'}}">{{'READY' if api_ready else 'OFFLINE'}}</b></div>
+  <div class="card ai-status"><span>Default Brain</span><b>{{default_model}}</b></div>
+  <div class="card ai-status"><span>Evidence Gaps</span><b class="{{'bad' if context.holdings_summary.basis_gaps else 'good'}}">{{context.holdings_summary.basis_gaps}}</b></div>
+  <div class="card ai-status"><span>Tax Year</span><b>{{context.tax_year or '—'}}</b></div>
+</div>
+
+<section class="ai-missions">
+  <h2>Advisor Missions</h2>
+  <div class="mission-buttons">
+    <button type="button" data-mode="evidence" data-prompt="Investigate my current evidence gaps. Rank the missing evidence by tax/accounting impact and tell me exactly what source records would most likely resolve each one.">Investigate Evidence Gaps</button>
+    <button type="button" data-mode="tax" data-prompt="Give me a tax-readiness SITREP. Explain what is reconciled, what is blocked, what evidence is missing, and what I should collect next.">Tax Readiness SITREP</button>
+    <button type="button" data-mode="portfolio" data-prompt="Analyze my current holdings. Show concentration, basis completeness, long-term versus short-term exposure, and important portfolio risks visible from my imported evidence.">Portfolio Review</button>
+    <button type="button" data-mode="reconcile" data-prompt="Review broker, tax-document, ledger, and holdings reconciliation. Identify mismatches, suspicious classifications, and the highest-value next checks.">Reconciliation Review</button>
+    <button type="button" data-mode="investing" data-prompt="Review my current crypto portfolio as an investment advisor. Give me the strongest bull and bear considerations, concentration risks, and questions I should answer before adding or reducing exposure. Use current web research if enabled.">Investment Review</button>
+  </div>
+</section>
+
+<section class="ai-console">
+  <div class="ai-console-head">
+    <div><h2>Talk to the Hound</h2><p class="muted">Ask questions, issue research missions, or interrogate the evidence. Luna is the default; escalate a hard problem to Sol.</p></div>
+    <form method="post" class="clear-ai-form"><input type="hidden" name="action" value="clear"><button class="secondary" type="submit">Clear Chat</button></form>
+  </div>
+
+  <div class="ai-chat" id="ai-chat">
+    {% if not history %}
+      <div class="ai-empty">No conversation yet. Try <b>“Why do I have basis gaps?”</b>, <b>“Give me a tax readiness SITREP”</b>, or <b>“Analyze my XRP position.”</b></div>
+    {% endif %}
+    {% for m in history %}
+      <article class="ai-message {{m.role}}">
+        <div class="ai-message-meta">
+          <b>{{'You' if m.role == 'user' else 'CryptoHound AI'}}</b>
+          {% if m.role == 'assistant' %}<span>{{m.model}}</span>{% endif %}
+          {% if m.mode %}<span>{{m.mode|upper}}</span>{% endif %}
+        </div>
+        <div class="ai-message-body">{{m.content}}</div>
+      </article>
+    {% endfor %}
+  </div>
+
+  <form method="post" class="ai-ask-form" id="ai-ask-form">
+    <input type="hidden" name="action" value="ask">
+    <div class="ai-controls">
+      <label>Mission
+        <select name="mode" id="ai-mode">
+          <option value="general">Full-Service Advisor</option>
+          <option value="tax">Accounting & Tax</option>
+          <option value="portfolio">Portfolio Advisor</option>
+          <option value="investing">Investment Research</option>
+          <option value="evidence">Evidence Investigator</option>
+          <option value="reconcile">Reconciliation</option>
+        </select>
+      </label>
+      <label>Brain
+        <select name="model">
+          <option value="gpt-5.6-luna" {{'selected' if default_model == 'gpt-5.6-luna' else ''}}>Luna — fast / economical</option>
+          <option value="gpt-5.6-sol" {{'selected' if default_model == 'gpt-5.6-sol' else ''}}>Sol — deep analysis</option>
+        </select>
+      </label>
+      <label class="web-toggle"><input type="checkbox" name="allow_web" value="1"> Current web research</label>
+    </div>
+    <textarea name="question" id="ai-question" rows="5" placeholder="Ask CryptoHound anything about your evidence, taxes, accounting, holdings, portfolio, or a crypto investment thesis..." required></textarea>
+    <div class="ai-submit-row"><span class="muted">Evidence-backed facts stay separate from AI inference. Current market/news research requires Web Research.</span><button type="submit" {{'disabled' if not api_ready else ''}}>Send Mission</button></div>
+  </form>
+</section>
+
+<section class="ai-context-peek">
+  <h2>What AI Can See</h2>
+  <div class="context-pills">
+    <span>Dashboard metrics</span><span>Holdings + open lots</span><span>Evidence gaps</span><span>Recent ledger events</span><span>Tax records</span><span>1099 reconciliation</span><span>Import provenance</span>
+  </div>
+  <p class="muted">CryptoHound sends a curated read-only evidence packet with each mission. The source database remains untouched by the model.</p>
+</section>
+
+<script>
+for (const b of document.querySelectorAll('.mission-buttons button')) {
+  b.addEventListener('click', () => {
+    document.getElementById('ai-mode').value = b.dataset.mode;
+    document.getElementById('ai-question').value = b.dataset.prompt;
+    document.getElementById('ai-question').focus();
+  });
+}
+const chat = document.getElementById('ai-chat');
+if (chat) chat.scrollTop = chat.scrollHeight;
+</script>
+{% endblock %}
