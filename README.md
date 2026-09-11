@@ -1,6 +1,6 @@
 # <img width="1670" height="942" alt="image" src="https://github.com/user-attachments/assets/c8c14cda-0e03-4083-af89-c6e34b1b91e4" />
 
-# CryptoHound v1.0.9
+# CryptoHound v1.0.11
 
 WolfPack evidence-driven digital-asset ledger and tax-intelligence prototype.
 
