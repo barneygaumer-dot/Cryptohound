@@ -1,1 +1,60 @@
-{% extends 'base.html' %}{% block content %}<h1>Canonical Ledger</h1><p class=muted>Every imported event retains its original row as JSON. Low-confidence mappings remain in the review queue.</p><div class=tablewrap><table><tr><th>Time</th><th>Provider</th><th>Type</th><th>Asset</th><th>Qty</th><th>USD Value</th><th>Fee</th><th>Origin → Destination</th><th>Confidence</th></tr>{% for r in rows %}<tr class="{{'review' if r.review_required else ''}}"><td>{{r.event_time}}</td><td>{{r.provider}}</td><td>{{r.tx_type}}</td><td>{{r.asset}}</td><td>{{r.quantity}}</td><td>{{r.fiat_value}}</td><td>{{r.fee_quantity}} {{r.fee_asset or ''}}</td><td>{{r.origin}} → {{r.destination}}</td><td>{{'%.0f%%'|format((r.confidence or 0)*100)}}</td></tr>{% endfor %}</table></div>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<div class="ledger-title-row">
+  <div>
+    <h1>Canonical Ledger</h1>
+    <p class="muted">Every imported event retains its original row as JSON. Low-confidence mappings remain in the review queue.</p>
+  </div>
+  <div class="ledger-result-count">
+    <b>{{ matching_count }}</b> matching event{{ '' if matching_count == 1 else 's' }}
+    {% if active_filter_count %}<span>{{ active_filter_count }} active filter{{ '' if active_filter_count == 1 else 's' }}</span>{% endif %}
+  </div>
+</div>
+
+<section class="ledger-filters">
+  <form method="get" action="{{ url_for('ledger') }}" class="ledger-filter-form">
+    <label>
+      <span>From</span>
+      <input type="date" name="date_from" value="{{ filters.date_from }}">
+    </label>
+    <label>
+      <span>To</span>
+      <input type="date" name="date_to" value="{{ filters.date_to }}">
+    </label>
+    <label>
+      <span>Provider</span>
+      <select name="provider">
+        <option value="">All providers</option>
+        {% for value in providers %}<option value="{{ value }}" {{ 'selected' if filters.provider == value else '' }}>{{ value }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>
+      <span>Type</span>
+      <select name="tx_type">
+        <option value="">All types</option>
+        {% for value in tx_types %}<option value="{{ value }}" {{ 'selected' if filters.tx_type == value else '' }}>{{ value }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>
+      <span>Asset</span>
+      <select name="asset">
+        <option value="">All assets</option>
+        {% for value in assets %}<option value="{{ value }}" {{ 'selected' if filters.asset == value else '' }}>{{ value }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="ledger-filter-actions">
+      <button type="submit">Apply Filters</button>
+      <a class="button secondary" href="{{ url_for('ledger') }}">Clear</a>
+    </div>
+  </form>
+</section>
+
+<div class="tablewrap"><table>
+  <tr><th>Time</th><th>Provider</th><th>Type</th><th>Asset</th><th>Qty</th><th>USD Value</th><th>Fee</th><th>Origin → Destination</th><th>Confidence</th></tr>
+  {% for r in rows %}
+  <tr class="{{'review' if r.review_required else ''}}"><td>{{r.event_time}}</td><td>{{r.provider}}</td><td>{{r.tx_type}}</td><td>{{r.asset}}</td><td>{{r.quantity}}</td><td>{{r.fiat_value}}</td><td>{{r.fee_quantity}} {{r.fee_asset or ''}}</td><td>{{r.origin}} → {{r.destination}}</td><td>{{'%.0f%%'|format((r.confidence or 0)*100)}}</td></tr>
+  {% else %}
+  <tr><td colspan="9" class="ledger-empty">No ledger events match the selected filters.</td></tr>
+  {% endfor %}
+</table></div>
+{% endblock %}

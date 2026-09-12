@@ -1,2 +1,32 @@
-{% extends 'base.html' %}{% block content %}<h1>Evidence Import</h1><section><form method=post enctype=multipart/form-data><label>Provider</label><select name=provider><option value=auto>Auto-detect</option><option>uphold</option><option>coinbase</option><option>robinhood</option><option>sofi</option><option>etrade</option><option>generic</option></select><label>Files</label><input type=file name=files multiple accept=".csv,.xlsx,.xls,.pdf,.md,.txt"><button>Import Evidence</button></form><p class=muted>Accepted: CSV, XLSX/XLS, PDF, MD, TXT. Originals are preserved under data/imports and deduplicated by SHA-256.</p></section>
-<section><h2>Import History</h2><table><tr><th>ID</th><th>File</th><th>Provider</th><th>Type</th><th>Status</th><th>Imported</th></tr>{% for r in imports %}<tr><td>{{r.id}}</td><td>{{r.filename}}</td><td>{{r.provider}}</td><td>{{r.source_type}}</td><td>{{r.status}}</td><td>{{r.imported_at}}</td></tr>{% endfor %}</table></section>{% endblock %}
+{% extends 'base.html' %}{% block content %}
+<h1>Evidence Import</h1>
+<section>
+  <form method=post enctype=multipart/form-data>
+    <label>Provider</label>
+    <select name=provider><option value=auto>Auto-detect</option><option>uphold</option><option>coinbase</option><option>robinhood</option><option>sofi</option><option>etrade</option><option>generic</option></select>
+    <label>Files</label>
+    <input type=file name=files multiple accept=".csv,.xlsx,.xls,.pdf,.md,.txt">
+    <button>Import Evidence</button>
+  </form>
+  <p class=muted>Accepted: CSV, XLSX/XLS, PDF, MD, TXT. Originals are preserved under data/imports and deduplicated by SHA-256.</p>
+</section>
+<section>
+  <h2>Import History</h2>
+  <p class=muted><b>Purge Evidence</b> permanently removes the selected source file and every ledger/tax row derived from that import. Use it when an import parsed incorrectly so the corrected evidence can be imported again.</p>
+  <div class=tablewrap>
+    <table>
+      <tr><th>ID</th><th>File</th><th>Provider</th><th>Type</th><th>Status</th><th>Imported</th><th>Evidence Control</th></tr>
+      {% for r in imports %}
+      <tr>
+        <td>{{r.id}}</td><td>{{r.filename}}</td><td>{{r.provider}}</td><td>{{r.source_type}}</td><td>{{r.status}}</td><td>{{r.imported_at}}</td>
+        <td>
+          <form method=post action="{{ url_for('purge_import', import_id=r.id) }}" class=purge-form onsubmit="return confirm('PURGE evidence #' + '{{r.id}}' + ' — {{r.filename|e}}? This permanently removes the source file and all derived ledger/tax rows.');">
+            <button type=submit class=danger-button>Purge Evidence</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</section>
+{% endblock %}

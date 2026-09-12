@@ -47,3 +47,57 @@
 
 /* v1.0.11: AI Advisor */
 .ai-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:18px}.ai-title-row h1{margin-bottom:8px}.ai-readonly{border:1px solid #2d6f92;background:#0a1e2d;border-radius:14px;padding:12px 16px;display:grid;gap:3px;min-width:330px}.ai-readonly b{color:#8bd0ff}.ai-readonly span{color:var(--muted);font-size:13px}.ai-status-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:22px}.ai-status{min-height:96px;display:flex;flex-direction:column;justify-content:center}.ai-status b{font-size:22px;overflow-wrap:anywhere}.ai-missions{padding-bottom:16px}.mission-buttons{display:flex;flex-wrap:wrap;gap:10px}.mission-buttons button{background:#0d2a40;border-color:#2f6690;color:#bfe4ff}.mission-buttons button:hover{background:#123955}.ai-console{padding:0;overflow:hidden}.ai-console-head{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:20px 20px 10px}.ai-console-head h2{margin-bottom:4px}.clear-ai-form{display:block}.secondary{background:#162331}.ai-chat{max-height:570px;overflow:auto;padding:14px 20px 4px;display:flex;flex-direction:column;gap:14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#08131e}.ai-empty{padding:28px;border:1px dashed #31506a;border-radius:14px;color:#9bbbd0}.ai-message{max-width:88%;padding:14px 16px;border-radius:15px;border:1px solid var(--line)}.ai-message.user{align-self:flex-end;background:#12324a;border-color:#315f80}.ai-message.assistant{align-self:flex-start;background:#0e2130;border-color:#24506d}.ai-message-meta{display:flex;align-items:center;gap:9px;color:#8fcfff;font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}.ai-message-meta span{padding:2px 7px;border:1px solid #29485f;border-radius:999px}.ai-message-body{white-space:pre-wrap;overflow-wrap:anywhere}.ai-ask-form{padding:18px 20px 20px}.ai-controls{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end}.ai-controls label{display:grid;gap:5px;color:#93b7cf;font-size:13px}.ai-controls .web-toggle{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid #31506a;border-radius:8px;background:#08131e;height:44px}.web-toggle input{width:auto;margin:0}.ai-ask-form textarea{resize:vertical;min-height:110px}.ai-submit-row{display:flex;justify-content:space-between;align-items:center;gap:20px}.ai-submit-row button{min-width:140px;background:#1269aa;border-color:#258bd0;font-weight:700}.ai-submit-row button:disabled{opacity:.45;cursor:not-allowed}.context-pills{display:flex;flex-wrap:wrap;gap:8px}.context-pills span{padding:6px 10px;border:1px solid #2b526d;border-radius:999px;color:#9cd4f7;background:#0b1d2b;font-size:13px}@media(max-width:1000px){.ai-title-row{display:block}.ai-readonly{min-width:0;margin-top:12px}.ai-status-grid{grid-template-columns:1fr 1fr}.ai-controls{grid-template-columns:1fr}.ai-submit-row{align-items:flex-start;flex-direction:column}.ai-message{max-width:96%}}
+.purge-form{display:block;margin:0}.danger-button{background:#421b24;border-color:#8f5360;color:#ffd6dc;padding:7px 10px}.danger-button:hover{background:#5a202c;border-color:#ff7e8b}
+
+.evidence-review{padding:0;overflow:hidden}.evidence-review details{margin:0}.evidence-review-summary{list-style:none;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:16px;padding:20px;cursor:pointer;user-select:none}.evidence-review-summary::-webkit-details-marker{display:none}.evidence-review-title{font-size:29px;font-weight:700;line-height:1.2}.evidence-review-count{justify-self:end;color:var(--bad);font-weight:750;font-size:17px;padding:5px 10px;border:1px solid rgba(255,126,139,.45);border-radius:999px;background:rgba(255,126,139,.08);white-space:nowrap}.evidence-review-chevron{font-size:28px;color:#9fc9e6;line-height:1;transform:rotate(0deg);transition:transform .15s ease}.evidence-review details[open] .evidence-review-chevron{transform:rotate(180deg)}.evidence-review-body{padding:0 20px 20px;border-top:1px solid var(--line)}@media(max-width:650px){.evidence-review-summary{grid-template-columns:1fr auto;gap:10px}.evidence-review-title{font-size:22px}.evidence-review-count{grid-column:1/2;grid-row:2;justify-self:start;font-size:14px}.evidence-review-chevron{grid-column:2;grid-row:1/3}}
+
+
+/* v1.0.16: Canonical Ledger filters */
+.ledger-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}.ledger-title-row h1{margin-bottom:10px}.ledger-result-count{flex:0 0 auto;display:flex;align-items:baseline;gap:8px;color:#9fc9e6;padding-top:10px}.ledger-result-count b{font-size:25px;color:#fff}.ledger-result-count span{font-size:13px;color:#77c4ff;border:1px solid #315f80;border-radius:999px;padding:3px 8px}.ledger-filters{padding:16px 18px;margin-bottom:18px}.ledger-filter-form{display:grid;grid-template-columns:repeat(2,minmax(145px,.8fr)) repeat(3,minmax(150px,1fr)) auto;gap:12px;align-items:end}.ledger-filter-form label{display:grid;gap:5px;min-width:0}.ledger-filter-form label>span{color:#93b7cf;font-size:13px;text-transform:uppercase;letter-spacing:.05em}.ledger-filter-form input,.ledger-filter-form select{width:100%;min-width:0}.ledger-filter-actions{display:flex;gap:8px;align-items:center}.ledger-filter-actions button,.ledger-filter-actions .button{white-space:nowrap}.ledger-empty{text-align:center;color:var(--muted);padding:26px}.secondary{background:#162331}@media(max-width:1200px){.ledger-filter-form{grid-template-columns:repeat(3,minmax(150px,1fr))}.ledger-filter-actions{grid-column:auto}}@media(max-width:760px){.ledger-title-row{display:block}.ledger-result-count{padding:0 0 12px}.ledger-filter-form{grid-template-columns:1fr 1fr}.ledger-filter-actions{grid-column:1/-1}}@media(max-width:500px){.ledger-filter-form{grid-template-columns:1fr}}
+
+/* v1.0.17: keep Current Holdings primary; lot-level evidence is opt-in detail */
+.tax-lots-review details {
+  width: 100%;
+}
+.tax-lots-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 2px 0;
+}
+.tax-lots-summary::-webkit-details-marker { display: none; }
+.tax-lots-title {
+  display: block;
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: var(--text, #f3f7fb);
+}
+.tax-lots-subtitle {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted, #8db8d8);
+  font-size: .94rem;
+  font-weight: 400;
+}
+.tax-lots-count {
+  color: #72c7ff;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tax-lots-chevron {
+  font-size: 1.4rem;
+  color: #72c7ff;
+  transition: transform .18s ease;
+}
+.tax-lots-review details[open] .tax-lots-chevron { transform: rotate(180deg); }
+.tax-lots-body { margin-top: 20px; }
+@media (max-width: 760px) {
+  .tax-lots-summary { grid-template-columns: minmax(0, 1fr) auto; }
+  .tax-lots-count { grid-column: 1 / 2; }
+  .tax-lots-chevron { grid-column: 2; grid-row: 1 / span 2; }
+  .tax-lots-title { font-size: 1.25rem; }
+}

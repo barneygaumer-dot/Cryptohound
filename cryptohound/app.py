@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -22,8 +23,10 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, sen
 from pypdf import PdfReader
 from werkzeug.utils import secure_filename
 
-VERSION = "1.0.11"
+VERSION = "1.0.17-hf1"
 APP_NAME = "CryptoHound"
+FIAT_ASSETS = {"USD", "EUR", "GBP"}
+UPHOLD_EXTERNAL_CUSTODY = {"xrp-ledger", "ethereum", "bitcoin", "stellar"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS imports (
@@ -138,6 +141,7 @@ def create_app() -> Flask:
         Path(p).mkdir(parents=True, exist_ok=True)
     init_db(app.config["DB"])
     migrate_tax_parser(app)
+    migrate_ledger_parser(app)
 
     app.jinja_env.filters["units"] = format_units
 
@@ -178,11 +182,124 @@ def create_app() -> Flask:
         rows = conn.execute("SELECT * FROM imports ORDER BY id DESC").fetchall()
         return render_template("imports.html", imports=rows)
 
+    @app.post("/imports/<int:import_id>/purge")
+    def purge_import(import_id):
+        """Permanently remove one imported evidence artifact and every row derived from it."""
+        conn = db(app)
+        row = conn.execute("SELECT * FROM imports WHERE id=?", (import_id,)).fetchone()
+        if not row:
+            flash(f"Evidence import #{import_id} was not found.", "error")
+            return redirect(url_for("imports"))
+
+        counts = {
+            "transactions": conn.execute("SELECT COUNT(*) FROM transactions WHERE import_id=?", (import_id,)).fetchone()[0],
+            "tax_records": conn.execute("SELECT COUNT(*) FROM tax_records WHERE import_id=?", (import_id,)).fetchone()[0],
+            "tax_issues": conn.execute("SELECT COUNT(*) FROM tax_record_issues WHERE import_id=?", (import_id,)).fetchone()[0],
+        }
+        try:
+            conn.execute("BEGIN")
+            conn.execute("DELETE FROM tax_record_issues WHERE import_id=?", (import_id,))
+            conn.execute("DELETE FROM tax_documents WHERE import_id=?", (import_id,))
+            conn.execute("DELETE FROM tax_records WHERE import_id=?", (import_id,))
+            conn.execute("DELETE FROM transactions WHERE import_id=?", (import_id,))
+            conn.execute("DELETE FROM imports WHERE id=?", (import_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        # Source evidence is stored with the import id prefix. Remove it only after
+        # the database transaction succeeds, so a failed DB purge never destroys the original.
+        leftovers = []
+        for source in Path(app.config["UPLOAD_DIR"]).glob(f"{import_id:06d}-*"):
+            try:
+                source.unlink()
+            except OSError as exc:
+                leftovers.append(f"{source.name}: {exc}")
+
+        msg = (f"Purged #{import_id} {row['filename']}: {counts['transactions']} ledger event(s), "
+               f"{counts['tax_records']} tax record(s), {counts['tax_issues']} issue row(s), and source evidence removed.")
+        if leftovers:
+            msg += " WARNING: source cleanup failed for " + "; ".join(leftovers)
+            flash(msg, "error")
+        else:
+            flash(msg, "info")
+        return redirect(url_for("imports"))
+
     @app.get("/ledger")
     def ledger():
         conn = db(app)
-        rows = conn.execute("SELECT * FROM transactions ORDER BY event_time DESC, id DESC LIMIT 2000").fetchall()
-        return render_template("ledger.html", rows=rows)
+
+        # v1.0.16: server-side Canonical Ledger filters.  Keep the query
+        # parameterized so filter values can never become SQL.
+        date_from = (request.args.get("date_from") or "").strip()
+        date_to = (request.args.get("date_to") or "").strip()
+        provider = (request.args.get("provider") or "").strip()
+        tx_type = (request.args.get("tx_type") or "").strip()
+        asset = (request.args.get("asset") or "").strip()
+
+        clauses = []
+        params: list[Any] = []
+        if date_from:
+            clauses.append("date(event_time) >= date(?)")
+            params.append(date_from)
+        if date_to:
+            clauses.append("date(event_time) <= date(?)")
+            params.append(date_to)
+        if provider:
+            clauses.append("provider = ?")
+            params.append(provider)
+        if tx_type:
+            clauses.append("tx_type = ?")
+            params.append(tx_type)
+        if asset:
+            clauses.append("asset = ?")
+            params.append(asset)
+
+        where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            "SELECT * FROM transactions" + where_sql +
+            " ORDER BY event_time DESC, id DESC LIMIT 2000",
+            params,
+        ).fetchall()
+        matching_count = conn.execute(
+            "SELECT COUNT(*) FROM transactions" + where_sql, params
+        ).fetchone()[0]
+
+        # Filter menus are sourced from the complete ledger, not the current
+        # result set, so users can freely move from one filter combination to
+        # another without first clearing the form.
+        providers = [r[0] for r in conn.execute(
+            "SELECT DISTINCT provider FROM transactions "
+            "WHERE provider IS NOT NULL AND trim(provider) <> '' ORDER BY provider"
+        )]
+        tx_types = [r[0] for r in conn.execute(
+            "SELECT DISTINCT tx_type FROM transactions "
+            "WHERE tx_type IS NOT NULL AND trim(tx_type) <> '' ORDER BY tx_type"
+        )]
+        assets = [r[0] for r in conn.execute(
+            "SELECT DISTINCT asset FROM transactions "
+            "WHERE asset IS NOT NULL AND trim(asset) <> '' ORDER BY asset"
+        )]
+
+        filters = {
+            "date_from": date_from,
+            "date_to": date_to,
+            "provider": provider,
+            "tx_type": tx_type,
+            "asset": asset,
+        }
+        active_filter_count = sum(bool(v) for v in filters.values())
+        return render_template(
+            "ledger.html",
+            rows=rows,
+            providers=providers,
+            tx_types=tx_types,
+            assets=assets,
+            filters=filters,
+            active_filter_count=active_filter_count,
+            matching_count=matching_count,
+        )
 
     @app.get("/holdings")
     def holdings():
@@ -525,8 +642,32 @@ def detect_provider(name: str, raw: bytes, hint: str) -> str:
 
 
 def import_csv(conn, import_id: int, raw: bytes, provider: str) -> int:
-    df = pd.read_csv(io.BytesIO(raw))
+    # Coinbase transaction exports prepend a human-readable title/user block before
+    # the actual CSV header. Locate the real header instead of assuming row 1.
+    if provider == "coinbase":
+        df = read_coinbase_csv(raw)
+    else:
+        df = pd.read_csv(io.BytesIO(raw))
     return normalize_dataframe(conn, import_id, df, provider)
+
+
+def read_coinbase_csv(raw: bytes) -> pd.DataFrame:
+    text = raw.decode("utf-8-sig", errors="replace")
+    lines = text.splitlines()
+    required = {"id", "timestamp", "transaction type", "asset", "quantity transacted"}
+    header_index = None
+    for i, line in enumerate(lines[:50]):
+        try:
+            fields = next(csv.reader([line]))
+        except Exception:
+            continue
+        lowered = {str(x).strip().lower() for x in fields}
+        if required.issubset(lowered):
+            header_index = i
+            break
+    if header_index is None:
+        raise ValueError("Coinbase transaction header not found; source preserved for review.")
+    return pd.read_csv(io.StringIO("\n".join(lines[header_index:])))
 
 
 def import_excel(conn, import_id: int, raw: bytes, provider: str) -> int:
@@ -540,27 +681,19 @@ def import_excel(conn, import_id: int, raw: bytes, provider: str) -> int:
 def normalize_dataframe(conn, import_id: int, df: pd.DataFrame, provider: str) -> int:
     cols = {str(c).strip().lower(): c for c in df.columns}
     count = 0
+
+    if provider == "coinbase" and "quantity transacted" in cols and "transaction type" in cols:
+        return normalize_coinbase(conn, import_id, df, cols)
+
     if provider == "uphold" and "destination currency" in cols and "origin currency" in cols:
         for _, row in df.iterrows():
             rec = {str(c): clean_value(row[c]) for c in df.columns}
-            event_time = iso_date(rec.get("Date"))
-            typ = str(rec.get("Type") or "").lower()
-            origin = str(rec.get("Origin") or "")
-            dest = str(rec.get("Destination") or "")
-            o_cur = str(rec.get("Origin Currency") or "").upper()
-            d_cur = str(rec.get("Destination Currency") or "").upper()
-            o_amt = num(rec.get("Origin Amount"))
-            d_amt = num(rec.get("Destination Amount"))
-            fee_amt = num(rec.get("Fee Amount"))
-            fee_cur = str(rec.get("Fee Currency") or "").upper() or None
-            tx_type = classify_uphold(typ, origin, dest, o_cur, d_cur)
-            asset, qty, fiat = choose_asset_value(o_cur, d_cur, o_amt, d_amt)
-            fee_usd = fee_amt if fee_cur == "USD" else None
-            review = 1 if tx_type in ("TRANSFER_OR_SWAP", "UNKNOWN") else 0
-            conn.execute("""INSERT INTO transactions(import_id,external_id,event_time,provider,asset,quantity,fiat_value,fee_asset,fee_quantity,fee_usd,tx_type,origin,destination,status,raw_json,confidence,review_required)
-                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                         (import_id, rec.get("Id"), event_time, provider, asset, qty, fiat, fee_cur, fee_amt, fee_usd,
-                          tx_type, origin, dest, rec.get("Status"), json.dumps(rec), 0.98 if not review else 0.70, review))
+            n = normalize_uphold_record(rec)
+            conn.execute("""INSERT INTO transactions(import_id,external_id,event_time,provider,asset,quantity,fiat_value,fiat_currency,fee_asset,fee_quantity,fee_usd,tx_type,origin,destination,status,raw_json,confidence,review_required)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         (import_id, rec.get("Id"), n["event_time"], provider, n["asset"], n["quantity"], n["fiat_value"],
+                          n["fiat_currency"], n["fee_asset"], n["fee_quantity"], n["fee_usd"], n["tx_type"],
+                          n["origin"], n["destination"], rec.get("Status"), json.dumps(rec), n["confidence"], n["review_required"]))
             count += 1
         return count
 
@@ -579,6 +712,91 @@ def normalize_dataframe(conn, import_id: int, df: pd.DataFrame, provider: str) -
                       str(val(row, asset_col) or "").upper() or None, num(val(row, qty_col)), num(val(row, price_col)),
                       str(val(row, type_col) or "UNKNOWN").upper(), "imported", json.dumps(rec), 0.55, 1))
         count += 1
+    return count
+
+
+
+def normalize_coinbase(conn, import_id: int, df: pd.DataFrame, cols: dict) -> int:
+    """Normalize Coinbase transaction-history CSV rows into CryptoHound's canonical ledger."""
+    id_col = first_col(cols, "id")
+    date_col = first_col(cols, "timestamp")
+    type_col = first_col(cols, "transaction type")
+    asset_col = first_col(cols, "asset")
+    qty_col = first_col(cols, "quantity transacted")
+    total_col = first_col(cols, "total (inclusive of fees and/or spread)", "total")
+    subtotal_col = first_col(cols, "subtotal")
+    fee_col = first_col(cols, "fees and/or spread", "fees", "fee")
+    notes_col = first_col(cols, "notes")
+    sender_col = first_col(cols, "sender address")
+    recipient_col = first_col(cols, "recipient address")
+
+    recognized = {
+        "buy": "BUY",
+        "advanced trade buy": "BUY",
+        "sell": "SELL",
+        "advanced trade sell": "SELL",
+        "send": "TRANSFER_OUT",
+        "receive": "TRANSFER_IN",
+        "staking income": "INCOME",
+        "reward income": "INCOME",
+        "learning reward": "INCOME",
+        "retail staking transfer": "SELF_TRANSFER",
+        "retail unstaking transfer": "SELF_TRANSFER",
+    }
+    count = 0
+    review_count = 0
+    for _, row in df.iterrows():
+        rec = {str(c): clean_value(row[c]) for c in df.columns}
+        raw_type = str(val(row, type_col) or "").strip()
+        typ_key = raw_type.lower()
+        asset = str(val(row, asset_col) or "").strip().upper() or None
+        signed_qty = num(val(row, qty_col))
+        qty = abs(signed_qty) if signed_qty is not None else None
+
+        if typ_key == "convert":
+            tx_type = "CONVERT_IN" if (signed_qty or 0) > 0 else "CONVERT_OUT" if (signed_qty or 0) < 0 else "UNKNOWN"
+        elif typ_key == "withdrawal":
+            # Coinbase cash withdrawals are preserved as ledger evidence but do not alter crypto holdings.
+            tx_type = "FIAT_WITHDRAWAL" if asset in {"USD", "EUR", "GBP"} else "TRANSFER_OUT"
+        else:
+            tx_type = recognized.get(typ_key, "UNKNOWN")
+
+        total = num(val(row, total_col))
+        subtotal = num(val(row, subtotal_col))
+        fiat_value = abs(total) if total is not None else abs(subtotal) if subtotal is not None else None
+        fee = num(val(row, fee_col))
+        fee_usd = abs(fee) if fee is not None else None
+        sender = str(val(row, sender_col) or "").strip() or None
+        recipient = str(val(row, recipient_col) or "").strip() or None
+
+        origin = "coinbase"
+        destination = "coinbase"
+        if tx_type == "TRANSFER_OUT":
+            destination = recipient or "external"
+        elif tx_type == "TRANSFER_IN":
+            origin = sender or "external"
+        elif tx_type == "FIAT_WITHDRAWAL":
+            destination = "external-bank"
+
+        review = 1 if tx_type == "UNKNOWN" else 0
+        if review:
+            review_count += 1
+        rec["_cryptohound_coinbase_type"] = tx_type
+        rec["_cryptohound_signed_quantity"] = signed_qty
+
+        conn.execute("""INSERT INTO transactions(import_id,external_id,event_time,provider,asset,quantity,fiat_value,fiat_currency,
+                      fee_asset,fee_quantity,fee_usd,tx_type,origin,destination,status,raw_json,confidence,review_required)
+                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (import_id, val(row, id_col), iso_date(val(row, date_col)), "coinbase", asset, qty, fiat_value, "USD",
+                      "USD" if fee_usd not in (None, 0) else None, fee_usd, fee_usd, tx_type, origin, destination,
+                      "imported", json.dumps(rec), 0.99 if not review else 0.60, review))
+        count += 1
+
+    note = f"Coinbase transaction CSV parsed: {count} ledger event(s)"
+    if review_count:
+        note += f"; {review_count} unknown event(s) require review"
+    conn.execute("UPDATE imports SET status=?, notes=? WHERE id=?",
+                 ("review" if review_count else "ok", note, import_id))
     return count
 
 
@@ -789,33 +1007,102 @@ def insert_tax(conn, import_id, provider, year, asset, units, acquired, disposed
                  (import_id, provider, year, asset, units, acquired, disposed, proceeds, basis, gl, term, basis_reported, note, raw))
 
 def classify_uphold(typ, origin, dest, o_cur, d_cur):
-    fiat = {"USD", "EUR", "GBP"}
-    if typ == "in" and origin == "credit-card" and d_cur not in fiat:
-        return "BUY"
-    if typ == "out" and origin == "uphold" and dest in ("xrp-ledger", "ethereum", "bitcoin", "stellar"):
-        return "TRANSFER_OUT"
-    if typ == "in" and dest == "uphold" and origin in ("xrp-ledger", "ethereum", "bitcoin", "stellar"):
+    """Classify Uphold rows by economic meaning, not by the provider's generic verb.
+
+    Uphold uses ``transfer`` for both actual custody moves and asset conversions.
+    CryptoHound therefore evaluates the currencies and endpoints together.  Fiat
+    movements are kept as ledger evidence but are never treated as crypto lots.
+    """
+    typ = (typ or "").strip().lower()
+    origin = (origin or "").strip().lower()
+    dest = (dest or "").strip().lower()
+    o_cur = (o_cur or "").upper()
+    d_cur = (d_cur or "").upper()
+
+    # Card funding directly into a crypto asset is an acquisition. Card funding
+    # into USD is cash funding evidence, not an investment lot.
+    if typ == "in" and origin == "credit-card":
+        return "FIAT_DEPOSIT" if d_cur in FIAT_ASSETS else "BUY"
+
+    # Asset returning from a blockchain/self-custody location to Uphold.
+    if typ == "in" and dest == "uphold" and o_cur == d_cur and o_cur not in FIAT_ASSETS:
         return "TRANSFER_IN"
+
+    # Uphold internal conversions.  Crypto -> fiat is a sale; fiat -> crypto is
+    # a buy; crypto -> crypto is a taxable conversion with two asset legs.
     if typ == "transfer" and origin == "uphold" and dest == "uphold":
-        if o_cur in fiat and d_cur not in fiat:
+        if o_cur in FIAT_ASSETS and d_cur not in FIAT_ASSETS:
             return "BUY"
-        if o_cur not in fiat and d_cur in fiat:
+        if o_cur not in FIAT_ASSETS and d_cur in FIAT_ASSETS:
             return "SELL"
-        if o_cur != d_cur:
+        if o_cur not in FIAT_ASSETS and d_cur not in FIAT_ASSETS and o_cur != d_cur:
             return "CRYPTO_TO_CRYPTO"
+        if o_cur in FIAT_ASSETS and d_cur in FIAT_ASSETS:
+            return "FIAT_TRANSFER"
         return "SELF_TRANSFER"
-    if typ == "out" and o_cur == d_cur:
+
+    # Anything leaving Uphold in fiat is a cash withdrawal, not a transfer of a
+    # tax lot.  Same-asset crypto leaving Uphold is a custody transfer.
+    if typ == "out" and origin == "uphold":
+        if o_cur in FIAT_ASSETS:
+            return "FIAT_WITHDRAWAL"
+        if o_cur == d_cur or not d_cur:
+            return "TRANSFER_OUT"
+
+    # Generic same-asset crypto movements are custody transfers.
+    if typ == "out" and o_cur == d_cur and o_cur not in FIAT_ASSETS:
         return "TRANSFER_OUT"
+    if typ == "in" and o_cur == d_cur and o_cur not in FIAT_ASSETS:
+        return "TRANSFER_IN"
+
     return "TRANSFER_OR_SWAP"
 
 
 def choose_asset_value(o_cur, d_cur, o_amt, d_amt):
-    fiat = {"USD", "EUR", "GBP"}
-    if d_cur and d_cur not in fiat:
+    if d_cur and d_cur not in FIAT_ASSETS:
         return d_cur, d_amt, o_amt if o_cur == "USD" else None
-    if o_cur and o_cur not in fiat:
+    if o_cur and o_cur not in FIAT_ASSETS:
         return o_cur, o_amt, d_amt if d_cur == "USD" else None
     return d_cur or o_cur or None, d_amt or o_amt, d_amt if d_cur == "USD" else o_amt if o_cur == "USD" else None
+
+
+def normalize_uphold_record(rec):
+    """Return canonical fields for one preserved Uphold CSV row.
+
+    The raw row remains untouched in ``raw_json``.  This function only produces
+    derived ledger fields, which makes parser migration safe and repeatable.
+    """
+    typ = str(rec.get("Type") or "").strip().lower()
+    origin = str(rec.get("Origin") or "").strip()
+    dest = str(rec.get("Destination") or "").strip()
+    o_cur = str(rec.get("Origin Currency") or "").strip().upper()
+    d_cur = str(rec.get("Destination Currency") or "").strip().upper()
+    o_amt = num(rec.get("Origin Amount"))
+    d_amt = num(rec.get("Destination Amount"))
+    fee_amt = num(rec.get("Fee Amount"))
+    fee_cur = str(rec.get("Fee Currency") or "").strip().upper() or None
+    tx_type = classify_uphold(typ, origin, dest, o_cur, d_cur)
+    asset, qty, fiat = choose_asset_value(o_cur, d_cur, o_amt, d_amt)
+
+    # For fiat-only rows preserve the cash movement in the ledger.  Holdings and
+    # tax-lot reconstruction explicitly ignore fiat assets.
+    fiat_currency = "USD" if "USD" in (o_cur, d_cur) else (d_cur or o_cur or "USD")
+    review = 1 if tx_type in ("TRANSFER_OR_SWAP", "UNKNOWN") else 0
+    return {
+        "event_time": iso_date(rec.get("Date")),
+        "asset": asset,
+        "quantity": qty,
+        "fiat_value": fiat,
+        "fiat_currency": fiat_currency,
+        "fee_asset": fee_cur,
+        "fee_quantity": fee_amt,
+        "fee_usd": fee_amt if fee_cur == "USD" else None,
+        "tx_type": tx_type,
+        "origin": origin,
+        "destination": dest,
+        "confidence": 0.99 if not review else 0.70,
+        "review_required": review,
+    }
 
 
 def holdings_inventory(conn):
@@ -854,6 +1141,8 @@ def holdings_inventory(conn):
             "import_id": row["import_id"], "source_filename": row["source_filename"],
             "external_id": row["external_id"], "confidence": row["confidence"],
             "review_required": bool(row["review_required"]), "basis_status": basis_status,
+            "observed_value": None if row["fiat_value"] is None else abs(D(row["fiat_value"])),
+            "basis_evidence": [], "basis_missing_reason": "" if basis_d is not None else "Authoritative acquisition basis not established by imported evidence",
             "note": note,
         })
 
@@ -889,8 +1178,15 @@ def holdings_inventory(conn):
             remaining -= take
         return remaining
 
-    def consume(asset, qty, location_hint=None):
+    def consume(asset, qty, location_hint=None, capture=False):
+        """Consume FIFO inventory. When capture=True, return the evidence consumed too.
+
+        Captured basis is evidence about the disposed/source lots. It is deliberately
+        NOT promoted to the replacement asset's tax basis unless the ledger contains
+        independent USD/FMV evidence for that acquisition.
+        """
         remaining = abs(D(qty))
+        consumed = []
         candidates = [x for x in lots if x["asset"] == asset and x["quantity"] > 0]
         if location_hint:
             exact = [x for x in candidates if (x["location"] or "").lower() == location_hint.lower()]
@@ -902,30 +1198,43 @@ def holdings_inventory(conn):
             if take <= 0: continue
             ratio = take / lot["quantity"]
             basis_used = None if lot["remaining_basis"] is None else lot["remaining_basis"] * ratio
+            if capture:
+                consumed.append({
+                    "asset": lot["asset"], "quantity": take, "basis_used": basis_used,
+                    "acquired_date": lot["acquired_date"], "provider": lot["provider"],
+                    "source_filename": lot["source_filename"], "import_id": lot["import_id"],
+                    "basis_status": lot["basis_status"],
+                })
             lot["quantity"] -= take
             if lot["remaining_basis"] is not None:
                 lot["remaining_basis"] -= basis_used
             remaining -= take
-        return remaining
+        return (remaining, consumed) if capture else remaining
 
     for r in rows:
         asset = (r["asset"] or "").upper()
         qty = abs(D(r["quantity"] or 0))
         if not asset or qty <= 0:
             continue
+        # CryptoHound Holdings is a digital-asset inventory view. Fiat deposits,
+        # withdrawals and cash proceeds remain in the canonical ledger but must
+        # never become open tax lots or basis gaps.
+        if asset in FIAT_ASSETS:
+            continue
         typ = (r["tx_type"] or "").upper()
         provider = r["provider"] or "unknown"
         origin = r["origin"] or provider
         dest = r["destination"] or provider
 
-        if typ == "BUY":
-            # Broker fiat amount is treated as lot basis evidence. Do not add fee_usd again;
-            # feeds such as Uphold commonly report the fiat debit inclusive of transaction cost.
+        if typ in ("BUY", "INCOME", "CONVERT_IN"):
+            # Coinbase income and positive conversion legs create inventory just like acquisitions.
+            # Broker fiat amount is evidence of basis/FMV when present; CryptoHound never invents it.
             basis = r["fiat_value"] if r["fiat_value"] is not None else None
+            label = {"BUY": "BUY from canonical ledger", "INCOME": "Income/reward acquisition",
+                     "CONVERT_IN": "Crypto conversion acquisition"}[typ]
             new_lot(asset, qty, r["event_time"], basis, provider, dest, r,
-                    "known" if basis is not None else "unknown",
-                    "BUY from canonical ledger")
-        elif typ == "SELL":
+                    "known" if basis is not None else "unknown", label)
+        elif typ in ("SELL", "CONVERT_OUT"):
             left = consume(asset, qty, origin)
             if left > Decimal("0.000000000001"):
                 warnings.append(f"{asset}: sale exceeds reconstructed inventory by {format_units(left)} units.")
@@ -940,7 +1249,7 @@ def holdings_inventory(conn):
             left = split_move(asset, qty, origin, dest, r)
             if left > Decimal("0.000000000001"):
                 new_lot(asset, left, r["event_time"], None, provider, dest, r, "unknown",
-                        "Inbound transfer; acquisition/basis not present in imported evidence")
+                        "Inbound transfer; acquisition/basis not present in imported evidence. Any broker fiat value is retained as observed-value evidence, not asserted as basis.")
         elif typ == "SELF_TRANSFER":
             split_move(asset, qty, origin, dest, r)
         elif typ == "CRYPTO_TO_CRYPTO":
@@ -952,14 +1261,24 @@ def holdings_inventory(conn):
                 raw = {}
             src_asset = str(raw.get("Origin Currency") or "").upper()
             src_qty = D(raw.get("Origin Amount") or 0)
-            if src_asset and src_asset not in {"USD", "EUR", "GBP"} and src_qty > 0:
-                left = consume(src_asset, src_qty, origin)
+            consumed_evidence = []
+            if src_asset and src_asset not in FIAT_ASSETS and src_qty > 0:
+                left, consumed_evidence = consume(src_asset, src_qty, origin, capture=True)
                 if left > Decimal("0.000000000001"):
                     warnings.append(f"{src_asset}: crypto-to-crypto swap exceeds reconstructed inventory by {format_units(left)} units.")
             basis = r["fiat_value"] if r["fiat_value"] is not None else None
             new_lot(asset, qty, r["event_time"], basis, provider, dest, r,
-                    "known" if basis is not None else "unknown",
-                    "Crypto-to-crypto acquisition; basis requires review" if basis is None else "Crypto-to-crypto acquisition")
+                    "known" if basis is not None else "partial" if consumed_evidence else "unknown",
+                    "Crypto-to-crypto acquisition; source-lot basis preserved below; acquisition FMV/basis still requires valuation evidence" if basis is None else "Crypto-to-crypto acquisition")
+            created = lots[-1] if lots and lots[-1]["asset"] == asset else None
+            if created is not None:
+                created["basis_evidence"] = consumed_evidence
+                known_src = sum((x["basis_used"] for x in consumed_evidence if x["basis_used"] is not None), Decimal("0"))
+                unknown_src = sum(1 for x in consumed_evidence if x["basis_used"] is None)
+                created["source_basis_known"] = known_src
+                created["source_basis_unknown_lots"] = unknown_src
+                if basis is None:
+                    created["basis_missing_reason"] = "Replacement-asset USD/FMV basis not present; source-lot basis is preserved as evidence but is not substituted for FMV."
         elif typ == "TRANSFER_OR_SWAP":
             warnings.append(f"{asset}: ambiguous TRANSFER_OR_SWAP event excluded from automatic holdings math pending review.")
         # UNKNOWN/TEXT_EVIDENCE intentionally do not change inventory.
@@ -973,6 +1292,9 @@ def holdings_inventory(conn):
     open_lots = [x for x in lots if x["quantity"] > Decimal("0.000000000001")]
     today = datetime.now(timezone.utc)
     for lot in open_lots:
+        lot.setdefault("source_basis_known", Decimal("0"))
+        lot.setdefault("source_basis_unknown_lots", 0)
+        lot.setdefault("basis_evidence", [])
         if lot["remaining_basis"] is not None and lot["quantity"] > 0:
             lot["cost_per_unit"] = lot["remaining_basis"] / lot["quantity"]
         else:
@@ -1016,29 +1338,21 @@ def holdings_inventory(conn):
 
 
 def current_positions(conn):
-    # v1 deterministic net-flow view. Tax-lot engine will supersede this simple position accumulator in later revisions.
-    rows = conn.execute("SELECT asset, tx_type, quantity, fee_asset, fee_quantity, provider, destination FROM transactions WHERE asset IS NOT NULL").fetchall()
-    pos = {}
-    for r in rows:
-        a = r["asset"]
-        q = r["quantity"] or 0
-        t = (r["tx_type"] or "").upper()
-        delta = 0
-        if t in ("BUY", "TRANSFER_IN", "SELF_TRANSFER", "CRYPTO_TO_CRYPTO", "TRANSFER_OR_SWAP"):
-            delta = q
-        elif t in ("SELL", "TRANSFER_OUT"):
-            delta = -q
-        pos.setdefault(a, {"asset": a, "quantity": 0.0, "locations": set()})
-        pos[a]["quantity"] += delta
-        loc = r["destination"] or r["provider"]
-        if loc: pos[a]["locations"].add(loc)
-        if r["fee_asset"] == a and r["fee_quantity"]:
-            pos[a]["quantity"] -= r["fee_quantity"]
-    result = []
-    for v in pos.values():
-        if abs(v["quantity"]) > 1e-12:
-            result.append({"asset": v["asset"], "quantity": v["quantity"], "locations": ", ".join(sorted(v["locations"]))})
-    return sorted(result, key=lambda x: x["asset"])
+    """Dashboard position rollup sourced from the same lot-aware holdings engine.
+
+    This deliberately avoids maintaining a second, looser net-flow algorithm.
+    Ambiguous rows stay in the review queue instead of changing dashboard balances.
+    """
+    inventory = holdings_inventory(conn)
+    return [
+        {
+            "asset": r["asset"],
+            "quantity": float(r["quantity"]),
+            "locations": r["locations"],
+        }
+        for r in inventory["rollups"]
+        if r["quantity"] > Decimal("0.000000000001")
+    ]
 
 
 def liquidated_summary(conn):
@@ -1157,6 +1471,52 @@ def tax_integrity(conn, year, records=None):
     if unknown_terms: details.append(f"{unknown_terms} row(s) have unknown holding term (for example, VARIOUS acquisition dates).")
     return {"export_ready": export_ready, "headline": headline, "details": details, "issues": issues, "documents": docs,
             "row_math_variance": row_math_variance, "bad_dates": bad_dates, "bad_year": bad_year, "unknown_terms": unknown_terms}
+
+
+def migrate_ledger_parser(app: Flask):
+    """Re-derive canonical Uphold ledger fields from preserved raw evidence.
+
+    v3 fixes the custody-chain model: fiat cash movements stay in the ledger but
+    no longer masquerade as investment lots, while crypto transfers retain their
+    acquisition history across custody locations.  Original imported files and
+    raw_json are never modified.
+    """
+    parser_version = "3"
+    conn = sqlite3.connect(app.config["DB"])
+    conn.row_factory = sqlite3.Row
+    current = conn.execute("SELECT value FROM settings WHERE key='_ledger_parser_version'").fetchone()
+    if current and current[0] == parser_version:
+        conn.close()
+        return
+
+    rows = conn.execute("SELECT * FROM transactions WHERE provider='uphold' ORDER BY id").fetchall()
+    if rows:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = Path(app.config["BACKUP_DIR"]) / f"auto-pre-ledger-parser-v{parser_version}-{stamp}.db"
+        if Path(app.config["DB"]).exists():
+            shutil.copy2(app.config["DB"], backup)
+
+    for r in rows:
+        try:
+            rec = json.loads(r["raw_json"] or "{}")
+            n = normalize_uphold_record(rec)
+        except Exception:
+            # Preserve the existing normalized row if the original evidence cannot
+            # be decoded. It remains visible for manual review rather than guessed.
+            conn.execute("UPDATE transactions SET review_required=1 WHERE id=?", (r["id"],))
+            continue
+        conn.execute("""UPDATE transactions
+                        SET event_time=?, asset=?, quantity=?, fiat_value=?, fiat_currency=?,
+                            fee_asset=?, fee_quantity=?, fee_usd=?, tx_type=?, origin=?,
+                            destination=?, confidence=?, review_required=?
+                        WHERE id=?""",
+                     (n["event_time"], n["asset"], n["quantity"], n["fiat_value"], n["fiat_currency"],
+                      n["fee_asset"], n["fee_quantity"], n["fee_usd"], n["tx_type"], n["origin"],
+                      n["destination"], n["confidence"], n["review_required"], r["id"]))
+
+    set_setting(conn, "_ledger_parser_version", parser_version)
+    conn.commit()
+    conn.close()
 
 
 def migrate_tax_parser(app: Flask):

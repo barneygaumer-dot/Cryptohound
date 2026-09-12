@@ -1,6 +1,6 @@
 {% extends 'base.html' %}{% block content %}
 <h1>Holdings</h1>
-<p class="muted">Open inventory reconstructed from the canonical ledger. Sales consume FIFO lots; recognized transfers move custody without being treated as sales. CryptoHound leaves unsupported basis as unknown rather than inventing it.</p>
+<p class="muted">Open inventory reconstructed from the canonical ledger. Transfers preserve custody and lot history. CryptoHound now exposes all available basis evidence even when the final authoritative basis is incomplete.</p>
 
 <div class="cards holdings-cards">
   <div class="card"><span>Assets Held</span><b>{{summary.assets}}</b></div>
@@ -9,35 +9,46 @@
   <div class="card"><span>Basis Gaps</span><b class="{{'bad' if summary.basis_gaps else 'good'}}">{{summary.basis_gaps}}</b></div>
 </div>
 
-{% if warnings %}<section class="integrity-hold"><h2>Holdings Evidence Review</h2>{% for w in warnings %}<div class="issue">{{w}}</div>{% endfor %}</section>{% endif %}
-
-<section>
-  <h2>Current Holdings</h2>
-  <div class="tablewrap"><table>
-    <tr><th>Asset</th><th>Quantity Remaining</th><th>Remaining Basis</th><th>Avg Cost / Unit</th><th>Open Lots</th><th>Custody / Location</th><th>Basis Status</th></tr>
-    {% for r in rollups %}<tr>
-      <td><b>{{r.asset}}</b></td><td>{{r.quantity|units}}</td>
-      <td>{% if r.basis_complete %}${{'%.2f'|format(r.remaining_basis)}}{% else %}${{'%.2f'|format(r.remaining_basis)}} known + gap{% endif %}</td>
-      <td>{% if r.cost_per_unit is not none %}${{'%.8f'|format(r.cost_per_unit)}}{% else %}—{% endif %}</td>
-      <td>{{r.lots}}</td><td>{{r.locations}}</td>
-      <td class="{{'good' if r.basis_complete else 'bad'}}">{{'COMPLETE' if r.basis_complete else 'INCOMPLETE (' ~ r.unknown_basis_lots ~ ')'}}</td>
-    </tr>{% else %}<tr><td colspan="7">No open holdings reconstructed from the imported ledger.</td></tr>{% endfor %}
-  </table></div>
+{% if warnings %}
+<section class="integrity-hold evidence-review">
+  <details>
+    <summary class="evidence-review-summary">
+      <span class="evidence-review-title">Holdings Evidence Review</span>
+      <span class="evidence-review-count">{{ warnings|length }} {{ 'issue' if warnings|length == 1 else 'issues' }} to resolve</span>
+      <span class="evidence-review-chevron" aria-hidden="true">⌄</span>
+    </summary>
+    <div class="evidence-review-body">
+      {% for w in warnings %}<div class="issue">{{w}}</div>{% endfor %}
+    </div>
+  </details>
 </section>
+{% endif %}
 
-<section>
-  <h2>Open Tax Lots / Evidence</h2>
-  <p class="muted">Lot-level view preserves acquisition evidence and custody. “Original Basis” is the basis attached to the reconstructed lot when acquired; “Remaining Basis” declines as units from that lot are disposed.</p>
-  <div class="tablewrap"><table>
-    <tr><th>Asset</th><th>Qty Remaining</th><th>Acquired</th><th>Original Basis</th><th>Remaining Basis</th><th>Cost / Unit</th><th>Holding Period</th><th>Custody</th><th>Provider</th><th>Evidence</th></tr>
-    {% for l in lots %}<tr class="{{'review' if l.review_required or l.basis_status != 'known' else ''}}">
-      <td><b>{{l.asset}}</b></td><td>{{l.quantity|units}}</td><td>{{l.acquired_display}}</td>
-      <td>{% if l.original_basis is not none %}${{'%.2f'|format(l.original_basis)}}{% else %}—{% endif %}</td>
-      <td>{% if l.remaining_basis is not none %}${{'%.2f'|format(l.remaining_basis)}}{% else %}—{% endif %}</td>
-      <td>{% if l.cost_per_unit is not none %}${{'%.8f'|format(l.cost_per_unit)}}{% else %}—{% endif %}</td>
-      <td>{{l.holding_period}}</td><td>{{l.location}}</td><td>{{l.provider}}</td>
-      <td><span title="{{l.note}}">Import #{{l.import_id}} · {{l.source_filename}}{% if l.external_id %}<br><code>{{l.external_id}}</code>{% endif %}</span></td>
-    </tr>{% else %}<tr><td colspan="10">No open lots.</td></tr>{% endfor %}
-  </table></div>
+<section><h2>Current Holdings</h2><div class="tablewrap"><table>
+<tr><th>Asset</th><th>Quantity Remaining</th><th>Known Remaining Basis</th><th>Avg Cost / Unit</th><th>Open Lots</th><th>Custody / Location</th><th>Basis Status</th></tr>
+{% for r in rollups %}<tr><td><b>{{r.asset}}</b></td><td>{{r.quantity|units}}</td><td>${{'%.2f'|format(r.remaining_basis)}}{% if not r.basis_complete %} known + gap{% endif %}</td><td>{% if r.cost_per_unit is not none %}${{'%.8f'|format(r.cost_per_unit)}}{% else %}—{% endif %}</td><td>{{r.lots}}</td><td>{{r.locations}}</td><td class="{{'good' if r.basis_complete else 'bad'}}">{{'COMPLETE' if r.basis_complete else 'INCOMPLETE (' ~ r.unknown_basis_lots ~ ')'}}</td></tr>{% else %}<tr><td colspan="7">No open holdings reconstructed from the imported ledger.</td></tr>{% endfor %}
+</table></div></section>
+
+<section class="tax-lots-review">
+  <details>
+    <summary class="tax-lots-summary">
+      <span>
+        <span class="tax-lots-title">Open Tax Lots / Basis Evidence</span>
+        <span class="tax-lots-subtitle">Detailed lot-level basis evidence</span>
+      </span>
+      <span class="tax-lots-count">{{ lots|length }} open {{ 'lot' if lots|length == 1 else 'lots' }}</span>
+      <span class="tax-lots-chevron" aria-hidden="true">⌄</span>
+    </summary>
+    <div class="tax-lots-body">
+      <p class="muted">Every known basis fact stays visible. “Observed Value” is preserved evidence and is not automatically asserted as tax basis. For crypto-to-crypto acquisitions, source-lot basis is shown separately from the replacement asset's acquisition basis/FMV.</p>
+      <div class="tablewrap"><table>
+      <tr><th>Asset</th><th>Qty Remaining</th><th>Acquired</th><th>Original Basis</th><th>Remaining Basis</th><th>Cost / Unit</th><th>Other Basis Evidence</th><th>Basis Status</th><th>Holding Period</th><th>Custody</th><th>Provider</th><th>Evidence</th></tr>
+      {% for l in lots %}<tr class="{{'review' if l.review_required or l.basis_status != 'known' else ''}}"><td><b>{{l.asset}}</b></td><td>{{l.quantity|units}}</td><td>{{l.acquired_display}}</td>
+      <td>{% if l.original_basis is not none %}${{'%.2f'|format(l.original_basis)}}{% else %}—{% endif %}</td><td>{% if l.remaining_basis is not none %}${{'%.2f'|format(l.remaining_basis)}}{% else %}—{% endif %}</td><td>{% if l.cost_per_unit is not none %}${{'%.8f'|format(l.cost_per_unit)}}{% else %}—{% endif %}</td>
+      <td>{% if l.observed_value is not none and l.original_basis is none %}<b>Observed value:</b> ${{'%.2f'|format(l.observed_value)}}<br>{% endif %}{% if l.source_basis_known %}<b>Source lots consumed:</b> ${{'%.2f'|format(l.source_basis_known)}} known basis{% if l.source_basis_unknown_lots %} + {{l.source_basis_unknown_lots}} unknown lot(s){% endif %}<br>{% endif %}{% if not l.observed_value and not l.source_basis_known %}—{% endif %}</td>
+      <td class="{{'good' if l.basis_status == 'known' else 'bad'}}"><b>{{l.basis_status|upper}}</b>{% if l.basis_missing_reason %}<br><span class="muted">{{l.basis_missing_reason}}</span>{% endif %}</td><td>{{l.holding_period}}</td><td>{{l.location}}</td><td>{{l.provider}}</td><td><span title="{{l.note}}">Import #{{l.import_id}} · {{l.source_filename}}{% if l.external_id %}<br><code>{{l.external_id}}</code>{% endif %}</span></td></tr>{% else %}<tr><td colspan="12">No open lots.</td></tr>{% endfor %}
+      </table></div>
+    </div>
+  </details>
 </section>
 {% endblock %}
