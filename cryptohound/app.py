@@ -20,10 +20,11 @@ from urllib.error import HTTPError, URLError
 import pandas as pd
 from dateutil import parser as dtparser
 from flask import Flask, flash, jsonify, redirect, render_template, request, send_file, url_for
+from markupsafe import Markup, escape
 from pypdf import PdfReader
 from werkzeug.utils import secure_filename
 
-VERSION = "1.0.17-hf1"
+VERSION = "1.0.17-hf3"
 APP_NAME = "CryptoHound"
 FIAT_ASSETS = {"USD", "EUR", "GBP"}
 UPHOLD_EXTERNAL_CUSTODY = {"xrp-ledger", "ethereum", "bitcoin", "stellar"}
@@ -137,7 +138,9 @@ def create_app() -> Flask:
     app.config["DB"] = app.config["DATA_DIR"] / "cryptohound.db"
     app.config["UPLOAD_DIR"] = app.config["DATA_DIR"] / "imports"
     app.config["BACKUP_DIR"] = base_dir / "backups"
-    for p in (app.config["DATA_DIR"], app.config["UPLOAD_DIR"], app.config["BACKUP_DIR"]):
+    app.config["CREDENTIALS_FILE"] = base_dir / "credentials.json"
+    app.config["REPORTS_DIR"] = base_dir / "reports"
+    for p in (app.config["DATA_DIR"], app.config["UPLOAD_DIR"], app.config["BACKUP_DIR"], app.config["REPORTS_DIR"]):
         Path(p).mkdir(parents=True, exist_ok=True)
     init_db(app.config["DB"])
     migrate_tax_parser(app)
@@ -312,7 +315,7 @@ def create_app() -> Flask:
         conn = db(app)
         settings = {r["key"]: r["value"] for r in conn.execute("SELECT key,value FROM settings")}
         default_model = settings.get("ai_model") or "gpt-5.6-luna"
-        api_ready = bool(os.environ.get("OPENAI_API_KEY"))
+        api_ready = bool(get_openai_api_key(app))
 
         if request.method == "POST":
             action = request.form.get("action", "ask")
@@ -330,7 +333,7 @@ def create_app() -> Flask:
                 flash("Give the Hound a question or mission.", "error")
                 return redirect(url_for("ai_advisor"))
             if not api_ready:
-                flash("OPENAI_API_KEY is not set. Add it to the environment used to launch CryptoHound, then restart.", "error")
+                flash("OpenAI API key is not configured. Add it in Setup / Admin → AI Integration.", "error")
                 return redirect(url_for("ai_advisor"))
 
             # Preserve the human request exactly. AI output is advisory and never writes ledger/tax truth.
@@ -341,7 +344,7 @@ def create_app() -> Flask:
                 context = build_ai_context(conn)
                 history = [dict(r) for r in conn.execute(
                     "SELECT role,mode,model,content FROM ai_messages ORDER BY id DESC LIMIT 12").fetchall()][::-1]
-                answer = call_openai_advisor(question, mode, model, allow_web, context, history)
+                answer = call_openai_advisor(question, mode, model, allow_web, context, history, app)
                 conn.execute("INSERT INTO ai_messages(created_at,role,mode,model,content) VALUES(?,?,?,?,?)",
                              (datetime.now(timezone.utc).isoformat(), "assistant", mode, model, answer))
                 conn.commit()
@@ -349,10 +352,45 @@ def create_app() -> Flask:
                 flash(f"AI request failed: {e}", "error")
             return redirect(url_for("ai_advisor"))
 
-        history = conn.execute("SELECT * FROM ai_messages ORDER BY id DESC LIMIT 40").fetchall()[::-1]
+        history_rows = conn.execute("SELECT * FROM ai_messages ORDER BY id DESC LIMIT 40").fetchall()[::-1]
+        history = []
+        for row in history_rows:
+            item = dict(row)
+            if item.get("role") == "assistant":
+                item["content_html"] = render_ai_markdown(item.get("content") or "")
+            history.append(item)
         context = build_ai_context(conn)
+        reports = list_ai_reports(app)
         return render_template("ai.html", history=history, context=context, api_ready=api_ready,
-                               default_model=default_model)
+                               default_model=default_model, reports=reports)
+
+    @app.post("/ai/report/<int:message_id>/save")
+    def save_ai_report(message_id: int):
+        conn = db(app)
+        try:
+            artifacts = create_ai_report_artifacts(app, conn, message_id)
+            flash(f"Report saved: {artifacts['pdf'].name}", "info")
+        except Exception as e:
+            flash(f"Report save failed: {e}", "error")
+        return redirect(url_for("ai_advisor"))
+
+    @app.post("/ai/report/<int:message_id>/export")
+    def export_ai_report(message_id: int):
+        conn = db(app)
+        try:
+            artifacts = create_ai_report_artifacts(app, conn, message_id)
+            return send_file(artifacts["pdf"], mimetype="application/pdf", as_attachment=True, download_name=artifacts["pdf"].name)
+        except Exception as e:
+            flash(f"Report export failed: {e}", "error")
+            return redirect(url_for("ai_advisor"))
+
+    @app.get("/ai/report/file/<path:filename>")
+    def download_ai_report(filename: str):
+        root = Path(app.config["REPORTS_DIR"]).resolve()
+        target = (root / filename).resolve()
+        if root not in target.parents or not target.exists() or target.suffix.lower() not in {".pdf", ".json"}:
+            return ("Report not found", 404)
+        return send_file(target, as_attachment=True, download_name=target.name)
 
     @app.get("/tax")
     def tax():
@@ -411,8 +449,11 @@ def create_app() -> Flask:
         if request.method == "POST" and request.form.get("action") == "save_settings":
             for key in ("ai_provider", "ai_model", "ai_endpoint", "tax_profile"):
                 set_setting(conn, key, request.form.get(key, ""))
+            api_key = (request.form.get("openai_api_key") or "").strip()
+            if api_key:
+                save_openai_api_key(app, api_key)
             conn.commit()
-            flash("Settings saved.", "info")
+            flash("Settings saved." + (" OpenAI API key stored in credentials.json." if api_key else ""), "info")
             return redirect(url_for("admin"))
         settings = {r["key"]: r["value"] for r in conn.execute("SELECT key,value FROM settings")}
         stats = {
@@ -424,7 +465,7 @@ def create_app() -> Flask:
             "db_size": human_bytes(Path(app.config["DB"]).stat().st_size if Path(app.config["DB"]).exists() else 0),
         }
         return render_template("admin.html", settings=settings, stats=stats,
-                               openai_api_ready=bool(os.environ.get("OPENAI_API_KEY")))
+                               openai_api_ready=bool(get_openai_api_key(app)))
 
     @app.post("/admin/update")
     def update_zip():
@@ -514,8 +555,8 @@ def json_safe(value):
 
 
 def call_openai_advisor(question: str, mode: str, model: str, allow_web: bool,
-                        evidence_context: dict[str, Any], history: list[dict[str, Any]]) -> str:
-    api_key = os.environ.get("OPENAI_API_KEY")
+                        evidence_context: dict[str, Any], history: list[dict[str, Any]], app: Flask) -> str:
+    api_key = get_openai_api_key(app)
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
@@ -1570,7 +1611,7 @@ def apply_update_zip(app: Flask, storage) -> str:
             name = m.filename.replace("\\", "/")
             rel = name[len(common_top)+1:] if common_top and name.startswith(common_top + "/") else name
             rel = rel.lstrip("/")
-            if not rel or rel.startswith(("data/", "backups/", ".venv/")):
+            if not rel or rel == "credentials.json" or rel.startswith(("data/", "backups/", "reports/", ".venv/")):
                 continue
             target = (base / rel).resolve()
             if base not in target.parents and target != base:
@@ -1580,6 +1621,144 @@ def apply_update_zip(app: Flask, storage) -> str:
                 shutil.copyfileobj(src, dst)
             applied += 1
     return f"Update applied ({applied} files). Backup: {backup.name}. Restart CryptoHound to load new code."
+
+
+
+AI_MODE_TITLES = {
+    "general": "Full-Service Advisor", "tax": "Tax Readiness SITREP",
+    "portfolio": "Portfolio Review", "investing": "Investment Review",
+    "evidence": "Evidence Investigation", "reconcile": "Reconciliation Review",
+}
+
+def render_ai_markdown(text: str) -> Markup:
+    # Small dependency-free Markdown renderer for AI prose. HTML is escaped first.
+    lines = str(text or "").splitlines()
+    out, list_tag = [], None
+    def inline(v: str) -> str:
+        v = str(escape(v))
+        v = re.sub(r"`([^`]+)`", r"<code>\1</code>", v)
+        v = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", v)
+        v = re.sub(r"(?<!\*)\*([^*]+)\*", r"<em>\1</em>", v)
+        return v
+    def close_list():
+        nonlocal list_tag
+        if list_tag:
+            out.append(f"</{list_tag}>"); list_tag = None
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            close_list(); continue
+        hm = re.match(r"^(#{1,4})\s+(.+)$", line)
+        if hm:
+            close_list(); level=len(hm.group(1)); out.append(f"<h{level}>{inline(hm.group(2))}</h{level}>"); continue
+        lm = re.match(r"^[-*]\s+(.+)$", line)
+        om = re.match(r"^\d+[.)]\s+(.+)$", line)
+        if lm or om:
+            wanted = "ul" if lm else "ol"
+            if list_tag != wanted:
+                close_list(); list_tag=wanted; out.append(f"<{wanted}>")
+            out.append(f"<li>{inline((lm or om).group(1))}</li>"); continue
+        close_list(); out.append(f"<p>{inline(line)}</p>")
+    close_list()
+    return Markup("\n".join(out))
+
+def _report_slug(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", value or "AI-Report").strip("-")
+    return slug[:60] or "AI-Report"
+
+def _report_month_dir(app: Flask, when: datetime) -> Path:
+    d = Path(app.config["REPORTS_DIR"]) / when.strftime("%Y") / when.strftime("%m")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def _report_question(conn, assistant_id: int) -> str:
+    row = conn.execute("SELECT content FROM ai_messages WHERE role='user' AND id < ? ORDER BY id DESC LIMIT 1", (assistant_id,)).fetchone()
+    return row["content"] if row else "CryptoHound AI Advisor mission"
+
+def create_ai_report_artifacts(app: Flask, conn, message_id: int) -> dict[str, Path]:
+    row = conn.execute("SELECT * FROM ai_messages WHERE id=? AND role='assistant'", (message_id,)).fetchone()
+    if not row:
+        raise ValueError("Assistant report not found")
+    question = _report_question(conn, message_id)
+    created = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00")) if row["created_at"] else datetime.now(timezone.utc)
+    title = AI_MODE_TITLES.get(row["mode"] or "general", "CryptoHound AI Report")
+    outdir = _report_month_dir(app, created.astimezone())
+    stem = f"{created.astimezone().strftime('%Y-%m-%d_%H%M%S')}_{_report_slug(title)}_m{message_id}"
+    pdf_path, json_path = outdir / f"{stem}.pdf", outdir / f"{stem}.json"
+    receipt = {
+        "application": APP_NAME, "version": VERSION, "report_message_id": message_id,
+        "created_at": row["created_at"], "exported_at": datetime.now(timezone.utc).isoformat(),
+        "mission": row["mode"], "title": title, "model": row["model"],
+        "question": question, "response": row["content"],
+        "evidence_context": json_safe(build_ai_context(conn)),
+        "doctrine": "AI analysis is advisory and read-only; deterministic CryptoHound evidence/accounting remains authoritative.",
+    }
+    json_path.write_text(json.dumps(receipt, indent=2, ensure_ascii=False), encoding="utf-8")
+    build_ai_report_pdf(pdf_path, receipt)
+    return {"pdf": pdf_path, "json": json_path}
+
+def build_ai_report_pdf(path: Path, receipt: dict[str, Any]) -> None:
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    except ImportError as exc:
+        raise RuntimeError("PDF export requires reportlab. Run: .venv/bin/pip install -r requirements.txt") from exc
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="WolfTitle", parent=styles["Title"], fontSize=20, leading=24, spaceAfter=8))
+    styles.add(ParagraphStyle(name="WolfMeta", parent=styles["Normal"], fontSize=9, leading=12, textColor="#4b6173", spaceAfter=12))
+    styles.add(ParagraphStyle(name="WolfBody", parent=styles["BodyText"], fontSize=10.5, leading=15, spaceAfter=7))
+    doc = SimpleDocTemplate(str(path), pagesize=letter, rightMargin=.65*inch, leftMargin=.65*inch, topMargin=.65*inch, bottomMargin=.65*inch, title=receipt["title"], author="CryptoHound")
+    story = [Paragraph("CryptoHound AI Advisor", styles["WolfTitle"]), Paragraph(escape(receipt["title"]), styles["Heading2"]),
+             Paragraph(f"Model: {escape(receipt.get('model') or '—')} &nbsp;&nbsp; Mission: {escape((receipt.get('mission') or 'general').upper())} &nbsp;&nbsp; Generated: {escape(receipt.get('created_at') or '')}", styles["WolfMeta"]),
+             Paragraph("Operator Tasking", styles["Heading3"]), Paragraph(escape(receipt.get("question") or ""), styles["WolfBody"]), Spacer(1, 6), Paragraph("Analysis", styles["Heading2"])]
+    # Lightweight Markdown-to-PDF: preserve report hierarchy without executing HTML.
+    for raw in (receipt.get("response") or "").splitlines():
+        line = raw.strip()
+        if not line:
+            story.append(Spacer(1, 5)); continue
+        if line.startswith("### "): story.append(Paragraph(escape(line[4:]), styles["Heading4"])); continue
+        if line.startswith("## "): story.append(Paragraph(escape(line[3:]), styles["Heading3"])); continue
+        if line.startswith("# "): story.append(Paragraph(escape(line[2:]), styles["Heading2"])); continue
+        line = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", str(escape(line)))
+        if re.match(r"^[-*]\s+", line): line = "• " + re.sub(r"^[-*]\s+", "", line)
+        story.append(Paragraph(line, styles["WolfBody"]))
+    story += [Spacer(1, 12), Paragraph("Evidence Receipt", styles["Heading3"]), Paragraph(f"Message ID: {receipt['report_message_id']} · CryptoHound {VERSION} · JSON receipt saved beside this PDF.", styles["WolfMeta"]), Paragraph("AI analysis is advisory and read-only. Verify material tax, legal, market, and accounting conclusions against the preserved source evidence.", styles["WolfMeta"])]
+    doc.build(story)
+
+def list_ai_reports(app: Flask) -> list[dict[str, Any]]:
+    root = Path(app.config["REPORTS_DIR"])
+    items = []
+    for pdf in sorted(root.glob("**/*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+        rel = pdf.relative_to(root).as_posix()
+        items.append({"name": pdf.stem, "pdf": rel, "json": rel[:-4] + ".json" if pdf.with_suffix('.json').exists() else None, "modified": datetime.fromtimestamp(pdf.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
+    return items
+
+def get_openai_api_key(app: Flask) -> str:
+    """Return the OpenAI key from local credentials.json, with env as a legacy fallback."""
+    path = Path(app.config["CREDENTIALS_FILE"])
+    try:
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            key = str(payload.get("openai_api_key") or payload.get("OPENAI_API_KEY") or "").strip()
+            if key:
+                return key
+    except (OSError, ValueError, TypeError):
+        pass
+    return (os.environ.get("OPENAI_API_KEY") or "").strip()
+
+
+def save_openai_api_key(app: Flask, api_key: str) -> None:
+    """Persist the API key outside the database/source tree and restrict it to the owner."""
+    path = Path(app.config["CREDENTIALS_FILE"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"openai_api_key": api_key.strip()}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
 
 
 def set_setting(conn, key, value):

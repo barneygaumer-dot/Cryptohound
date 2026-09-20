@@ -1,12 +1,12 @@
 # 🐺 CryptoHound
 
-> **FIND · VALIDATE · RECONCILE · REPORT**  
+> **FIND · VALIDATE · RECONCILE · REPORT**
 > Evidence-driven digital-asset accounting, holdings reconstruction, tax intelligence, and AI-assisted investigation.
 
 ![CryptoHound banner](cryptohound/static/cryptohound-banner.png)
 
-**Release:** `v1.0.17-hf1`  
-**Architecture:** Flask · SQLite · Python · deterministic evidence/accounting engine  
+**Release:** `v1.0.17-hf3`
+**Architecture:** Flask · SQLite · Python · deterministic evidence/accounting engine
 **Doctrine:** **AI can investigate, explain, research and advise. It cannot rewrite the accounting truth.**
 
 ---
@@ -100,7 +100,7 @@ CryptoHound includes a read-only AI investigation layer.
 - Curated evidence context includes holdings, open lots, evidence gaps, ledger activity, tax records, reconciliation, and import provenance.
 - AI cannot modify ledger rows, tax lots, basis, tax records, or source evidence.
 
-The API key is read from `OPENAI_API_KEY`; it is not stored in the CryptoHound database.
+The API key can be saved from **Setup / Admin → AI Integration**. CryptoHound stores it locally in `credentials.json` with owner-only permissions (0600); it is not stored in the accounting database or displayed back in the UI. `OPENAI_API_KEY` remains a legacy fallback.
 
 ### 🛡️ Evidence Integrity
 CryptoHound deliberately prefers **“I don't know yet”** over fabricated certainty.
@@ -177,16 +177,9 @@ systemctl --user restart cryptohound
 
 ## AI configuration
 
-Recommended Linux environment file:
+Open **Setup / Admin → AI Integration**, paste the OpenAI API key, and click **Save Settings**. CryptoHound writes the secret to root-level `credentials.json` with mode `0600`. The key is masked after saving and the file is excluded from Git and preserved by ZIP upgrades.
 
-```bash
-mkdir -p ~/.config/cryptohound
-chmod 700 ~/.config/cryptohound
-printf '%s\n' "OPENAI_API_KEY=replace_me" > ~/.config/cryptohound/cryptohound.env
-chmod 600 ~/.config/cryptohound/cryptohound.env
-```
-
-Keep secrets out of source control. The application database stores AI settings and chat history, **not the API key**.
+For backward compatibility, `OPENAI_API_KEY` is still accepted when no key exists in `credentials.json`. Keep secrets out of source control. The application database stores AI settings and chat history, **not the API key**.
 
 ---
 
@@ -255,3 +248,10 @@ A public repository should contain application source, documentation, safe stati
 > **Transactions establish history. Lots establish basis. Custody establishes location. Tax forms establish what the broker reported. CryptoHound reconciles the evidence and preserves uncertainty instead of inventing certainty.**
 
 **Semper Evidence Engineering. 🐺🧾**
+
+### v1.0.17-hf3 — AI Advisor workstation and report artifacts
+- Desktop AI Advisor now uses a left-side tasking cockpit and right-side intelligence reading pane.
+- AI responses render as safe Markdown for improved report readability.
+- Assistant products can be saved/exported as PDF with a companion JSON evidence receipt.
+- Reports persist under `reports/YYYY/MM/`, are excluded from Git, and are preserved by Update From ZIP.
+- Narrow screens collapse cleanly to tasking-first, report-second layout.

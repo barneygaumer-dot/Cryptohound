@@ -52,3 +52,9 @@ Thumbs.db
 # Local test artifacts
 /test-output/
 /tmp/
+
+# CryptoHound local credentials
+credentials.json
+
+# Finished intelligence / operator-generated reports
+/reports/
